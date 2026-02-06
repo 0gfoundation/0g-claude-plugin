@@ -14,13 +14,10 @@ Text-to-image generation using 0G Compute Network's **z-image** model.
 ### API Key Method (Simplest)
 
 ```bash
+# Set your API key
 export ZG_API_KEY="app-sk-..."
 
-curl -X POST "https://39.97.249.15:8888/v1/proxy/images/generations" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $ZG_API_KEY" \
-  -d '{"model": "z-image", "prompt": "A cute robot", "n": 1, "size": "512x512", "response_format": "b64_json"}' \
-  | jq -r '.data[0].b64_json' | base64 -d > output.png
+# Generate image (see SKILL.md for complete examples)
 ```
 
 ### SDK Method (Full Control)
@@ -38,7 +35,21 @@ import { createZGComputeNetworkBroker } from '@0gfoundation/0g-serving-broker';
 | Model | `z-image` |
 | Size | 512x512 |
 | Price | ~0.003 0G/image |
+| Response Time | 30-60 seconds |
+
+> **Note**: Endpoint is dynamically resolved via SDK. See SKILL.md for details.
+
+## Activation
+
+This skill activates when you mention:
+- "0g image" / "0g-image" / "z-image"
+- "text-to-image" with 0G
+- "image generation" with 0G Compute
 
 ## Documentation
 
-See [skills/SKILL.md](skills/SKILL.md) for complete documentation.
+See [skills/SKILL.md](skills/SKILL.md) for complete documentation including:
+- Full code examples with error handling
+- API reference
+- Troubleshooting guide
+- Best practices

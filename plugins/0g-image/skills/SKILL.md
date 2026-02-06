@@ -21,11 +21,13 @@ The z-image model provides decentralized text-to-image generation through 0G Com
 | Field | Value |
 |-------|-------|
 | Provider Address | `0xE29a72c7629815Eb480aE5b1F2dfA06f06cdF974` |
-| Endpoint | `https://39.97.249.15:8888/v1/proxy` |
 | Model | `z-image` |
 | Image Size | 512x512 |
 | Price | ~0.003 0G per image |
 | Network | 0G Mainnet |
+| Response Time | 30-60 seconds typical |
+
+> **Note**: The z-image endpoint is dynamically resolved from the provider's on-chain metadata using `broker.inference.getServiceMetadata()`. The endpoint may change; always retrieve it programmatically in production. For quick testing, you can use the current endpoint shown in the examples.
 
 ## Method 1: API Key (Recommended for Quick Start)
 
@@ -34,14 +36,15 @@ The simplest way to generate images - no wallet or SDK setup required.
 ### Setup
 
 ```bash
-# Set your API key
+# Set your API key and endpoint
 export ZG_API_KEY="app-sk-..."
+export ZG_IMAGE_ENDPOINT="https://39.97.249.15:8888/v1/proxy/images/generations"
 ```
 
 ### Generate Image (Shell)
 
 ```bash
-curl -X POST "https://39.97.249.15:8888/v1/proxy/images/generations" \
+curl -X POST "$ZG_IMAGE_ENDPOINT" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $ZG_API_KEY" \
   -d '{
@@ -59,9 +62,14 @@ curl -X POST "https://39.97.249.15:8888/v1/proxy/images/generations" \
 import fs from 'fs/promises';
 
 const API_KEY = process.env.ZG_API_KEY;
-const ENDPOINT = 'https://39.97.249.15:8888/v1/proxy/images/generations';
+const ENDPOINT = process.env.ZG_IMAGE_ENDPOINT || 
+    'https://39.97.249.15:8888/v1/proxy/images/generations';
 
 async function generateImage(prompt) {
+    if (!API_KEY) {
+        throw new Error('ZG_API_KEY environment variable not set');
+    }
+
     const response = await fetch(ENDPOINT, {
         method: 'POST',
         headers: {
@@ -78,6 +86,17 @@ async function generateImage(prompt) {
     });
 
     const data = await response.json();
+
+    // Check for errors
+    if (!response.ok || data.error) {
+        throw new Error(data.error?.message || `API error: ${response.status}`);
+    }
+
+    // Validate response structure
+    if (!data.data?.[0]?.b64_json) {
+        throw new Error('Invalid response: missing image data');
+    }
+
     const imageBuffer = Buffer.from(data.data[0].b64_json, 'base64');
     await fs.writeFile('output.png', imageBuffer);
     
@@ -85,7 +104,12 @@ async function generateImage(prompt) {
 }
 
 // Usage
-await generateImage('A beautiful sunset over mountains');
+try {
+    const path = await generateImage('A beautiful sunset over mountains');
+    console.log(`Image saved to: ${path}`);
+} catch (error) {
+    console.error('Failed to generate image:', error.message);
+}
 ```
 
 ## Method 2: SDK (Full Control)
@@ -98,8 +122,8 @@ Use the 0G Compute SDK for wallet-based authentication and full control.
 # Node.js >= 22.0.0 required
 node --version
 
-# Install SDK
-pnpm add @0gfoundation/0g-serving-broker ethers dotenv
+# Install SDK and dependencies
+pnpm add @0gfoundation/0g-serving-broker@^0.6.6 ethers@^6.13.1 axios@^1.7.9 dotenv@^16.4.7
 ```
 
 ### Setup Account
@@ -111,7 +135,7 @@ pnpm add @0gfoundation/0g-serving-broker -g
 # Configure network (choose mainnet)
 0g-compute-cli setup-network
 
-# Login with private key
+# Set up account with private key
 0g-compute-cli login
 
 # Deposit funds (minimum 3 0G for new accounts)
@@ -133,61 +157,88 @@ import fs from 'fs/promises';
 const RPC_URL = 'https://evmrpc.0g.ai';
 const PROVIDER_ADDRESS = '0xE29a72c7629815Eb480aE5b1F2dfA06f06cdF974';
 
-async function generateImage(prompt: string) {
-    // Setup
+async function generateImage(prompt: string): Promise<string> {
+    // Validate environment
+    if (!process.env.PRIVATE_KEY) {
+        throw new Error('PRIVATE_KEY environment variable not set');
+    }
+
+    // Setup wallet and broker
     const provider = new ethers.JsonRpcProvider(RPC_URL);
-    const wallet = new ethers.Wallet(process.env.PRIVATE_KEY!, provider);
+    const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
     const broker = await createZGComputeNetworkBroker(wallet);
     
-    // Get service metadata
+    // Get service metadata (endpoint is resolved dynamically)
     const { endpoint, model } = await broker.inference.getServiceMetadata(PROVIDER_ADDRESS);
     
     // Acknowledge provider (first time only)
     try {
         await broker.inference.acknowledgeProviderSigner(PROVIDER_ADDRESS);
-    } catch (e) {
-        // Already acknowledged
+        console.log('Provider acknowledged successfully');
+    } catch (e: any) {
+        if (e.message?.includes('already acknowledged') || e.message?.includes('Acknowledged')) {
+            console.log('Provider already acknowledged');
+        } else {
+            throw new Error(`Failed to acknowledge provider: ${e.message}`);
+        }
     }
     
     // Get auth headers
     const headers = await broker.inference.getRequestHeaders(PROVIDER_ADDRESS);
     
     // Generate image
-    const response = await axios.post(`${endpoint}/images/generations`, {
-        model: model,
-        prompt: prompt,
-        n: 1,
-        size: '512x512',
-        response_format: 'b64_json'
-    }, {
-        headers: {
-            'Content-Type': 'application/json',
-            ...headers
-        },
-        timeout: 120000
-    });
-    
-    // Save image
-    const imageBuffer = Buffer.from(response.data.data[0].b64_json, 'base64');
-    const outputPath = `image_${Date.now()}.png`;
-    await fs.writeFile(outputPath, imageBuffer);
-    
-    // Process response for fee management
-    const chatID = response.headers['zg-res-key'];
-    if (chatID) {
-        await broker.inference.processResponse(
-            PROVIDER_ADDRESS,
-            chatID,
-            undefined
-        );
+    try {
+        const response = await axios.post(`${endpoint}/images/generations`, {
+            model: model,
+            prompt: prompt,
+            n: 1,
+            size: '512x512',
+            response_format: 'b64_json'
+        }, {
+            headers: {
+                'Content-Type': 'application/json',
+                ...headers
+            },
+            timeout: 120000  // 2 minutes - image generation can take 30-60 seconds
+        });
+
+        // Validate response
+        if (!response.data?.data?.[0]?.b64_json) {
+            throw new Error('Invalid response: missing image data');
+        }
+        
+        // Save image
+        const imageBuffer = Buffer.from(response.data.data[0].b64_json, 'base64');
+        const outputPath = `image_${Date.now()}.png`;
+        await fs.writeFile(outputPath, imageBuffer);
+        
+        // Process response for fee management
+        const chatID = response.headers['zg-res-key'];
+        if (chatID) {
+            await broker.inference.processResponse(
+                PROVIDER_ADDRESS,
+                chatID,
+                undefined
+            );
+        }
+        
+        return outputPath;
+    } catch (error) {
+        if (axios.isAxiosError(error)) {
+            const message = error.response?.data?.error || error.message;
+            throw new Error(`API request failed: ${message}`);
+        }
+        throw error;
     }
-    
-    return outputPath;
 }
 
 // Usage
-const imagePath = await generateImage('A golden dragon flying through clouds');
-console.log(`Image saved to: ${imagePath}`);
+try {
+    const imagePath = await generateImage('A golden dragon flying through clouds');
+    console.log(`Image saved to: ${imagePath}`);
+} catch (error) {
+    console.error('Failed to generate image:', error.message);
+}
 ```
 
 ## API Reference
@@ -267,6 +318,7 @@ Authorization: Bearer <API_KEY or SDK_TOKEN>
 ```bash
 # For API Key method
 ZG_API_KEY=app-sk-...
+ZG_IMAGE_ENDPOINT=https://39.97.249.15:8888/v1/proxy/images/generations
 
 # For SDK method
 PRIVATE_KEY=your_wallet_private_key
@@ -281,45 +333,69 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const API_KEY = process.env.ZG_API_KEY;
-const ENDPOINT = 'https://39.97.249.15:8888/v1/proxy/images/generations';
+const ENDPOINT = process.env.ZG_IMAGE_ENDPOINT || 
+    'https://39.97.249.15:8888/v1/proxy/images/generations';
 
 async function main() {
     const prompt = process.argv[2] || 'A beautiful landscape';
     
-    console.log('🎨 0G z-image Generator (API Key)');
-    console.log(`📝 Prompt: "${prompt}"`);
-    
-    const response = await fetch(ENDPOINT, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${API_KEY}`
-        },
-        body: JSON.stringify({
-            model: 'z-image',
-            prompt,
-            n: 1,
-            size: '512x512',
-            response_format: 'b64_json'
-        })
-    });
-    
-    const data = await response.json();
-    
-    if (data.error) {
-        console.error('❌ Error:', data.error);
+    if (!API_KEY) {
+        console.error('Error: ZG_API_KEY not set in .env');
         process.exit(1);
     }
     
-    const imageBuffer = Buffer.from(data.data[0].b64_json, 'base64');
-    const filename = `image_${Date.now()}.png`;
-    await fs.writeFile(filename, imageBuffer);
+    console.log('🎨 0G z-image Generator (API Key)');
+    console.log(`📝 Prompt: "${prompt}"`);
     
-    console.log(`✨ Image saved: ${filename}`);
+    try {
+        const response = await fetch(ENDPOINT, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${API_KEY}`
+            },
+            body: JSON.stringify({
+                model: 'z-image',
+                prompt,
+                n: 1,
+                size: '512x512',
+                response_format: 'b64_json'
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (!response.ok || data.error) {
+            console.error('❌ API Error:', data.error?.message || response.status);
+            process.exit(1);
+        }
+        
+        if (!data.data?.[0]?.b64_json) {
+            console.error('❌ Invalid response: missing image data');
+            process.exit(1);
+        }
+        
+        const imageBuffer = Buffer.from(data.data[0].b64_json, 'base64');
+        const filename = `image_${Date.now()}.png`;
+        await fs.writeFile(filename, imageBuffer);
+        
+        console.log(`✨ Image saved: ${filename}`);
+    } catch (error) {
+        console.error('❌ Error:', error.message);
+        process.exit(1);
+    }
 }
 
-main().catch(console.error);
+main();
 ```
+
+## Activation
+
+This skill activates automatically when you mention:
+- "0g image" / "0g-image"
+- "z-image"
+- "text-to-image" with 0G
+- "image generation" with 0G Compute
 
 ## Getting an API Key
 
@@ -347,16 +423,23 @@ Use the SDK method to authenticate with your wallet.
 ```
 
 ### Timeout Errors
-- z-image generation can take 30-60 seconds
-- Increase timeout to 120000ms (2 minutes)
+- z-image generation typically takes 30-60 seconds
+- Ensure timeout is set to at least 120000ms (2 minutes)
+
+### Endpoint Changes
+- The endpoint may change as providers update their infrastructure
+- Always use `broker.inference.getServiceMetadata()` in production to get the current endpoint
+- Check 0G documentation or marketplace for updated endpoints
 
 ## Best Practices
 
-1. **Use API Key for testing** - simpler setup
-2. **Use SDK for production** - full control and cost management
-3. **Handle errors gracefully** - network issues are common
-4. **Set appropriate timeouts** - image generation takes time
-5. **Monitor costs** - track usage with `get-account` command
+1. **Use environment variables** - Never hardcode API keys or private keys
+2. **Use API Key for testing** - Simpler setup, faster iteration
+3. **Use SDK for production** - Full control, dynamic endpoint resolution, cost management
+4. **Handle errors gracefully** - Network issues are common in decentralized systems
+5. **Set appropriate timeouts** - Image generation takes 30-60 seconds
+6. **Monitor costs** - Track usage with `0g-compute-cli get-account`
+7. **Resolve endpoints dynamically** - Use SDK's `getServiceMetadata()` in production
 
 ## Resources
 
