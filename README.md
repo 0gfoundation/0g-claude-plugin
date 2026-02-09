@@ -1,5 +1,7 @@
 # 0G Plugin Marketplace for Claude Code
 
+> **Note**: This repository has been superseded. Please use [0g-agent-skills](https://github.com/0gfoundation/0g-agent-skills.git) as the unified entry point for all 0G skills.
+
 Official marketplace for **0G ecosystem** plugins - Making Claude an expert in decentralized infrastructure.
 
 ## Architecture
